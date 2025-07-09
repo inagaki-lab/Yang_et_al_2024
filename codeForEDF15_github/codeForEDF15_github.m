@@ -1,0 +1,1042 @@
+%% FF model with 2 ALM & 2 STR neurons in each layer
+% Repeating the same modules used in EDF1 and connect them by FF connection
+% This allows to generate sequential activity which is not possible with
+% recurrent networks in EDF1
+% Another advantage of this model is that it does not require unresoable level of fine tuning
+% of connectivity matrix at each layer to implement integrator (to have eig
+% 1). 
+
+% to implement this
+% 1. reduce the eigenvalue by slightly weakning recurrent connections
+% 2. Then connect neurons in each module by FF connection
+% 3. There is a threshold for FF conenction (rThr) in order for scaling to happen
+% rThr = 5.5 or higher gives good scaling (baseline spike rate is 5 so this means when the activity goes 0.5Hz higher than baseline, it provides FF inputs)
+
+% in addition, we can provide input along slow mode (eig~1) for intergration (inputVector)
+% and fast mode to generate transient cue reponse  (inputVector2)
+
+
+clear;%close all;
+
+network_type = {'STRintegrator','ALMintegrator','distributed','redundant'}
+
+% run simulation
+plot_FF_model('STRintegrator')
+
+for n = 1:numel(network_type)
+    plot_FF_model(network_type{n})
+    close all
+end
+
+
+
+function plot_FF_model(network_type)
+% Generate connectivity matrix and call functions to simualte and plot
+% results
+  
+    %% generate connectivity matrix
+    network_prop = gnerateConnectivityMatrix(network_type);
+
+    
+    %% run simulation: control condition    
+    saveFig = 1; % 1 save 0 just plot
+    
+    simType ='Control_';
+    normfactor = nan; 
+    [LT,param,normfactor_ctrl_cm,normfactor_ctrl_mm,normfactor_ctrl_rm] = run_simulation(network_prop,[],simType,saveFig,normfactor,nan,nan);
+
+    
+    %% run simulation: ALM complete silencing
+    simType ='ALM_silencing_';
+    
+    inhtmp = zeros(network_prop.numN,1);
+    inhtmp(network_prop.ALM) = network_prop.s1;
+    
+    Inh = zeros(network_prop.numN,network_prop.timePoints); % use for silencing
+    Inh(:,2100:2400) = repmat(inhtmp,1,301);
+    for i=1:300
+        Inh(:,2400+i) = [inhtmp+i*(-inhtmp)/300]'; % ramp down
+    end
+    network_prop.Inh          =Inh;
+    
+    LT_ALM = run_simulation(network_prop,param,simType,saveFig,normfactor_ctrl_cm,normfactor_ctrl_mm,normfactor_ctrl_rm);
+
+
+    %% run simulation: STR inhibition 
+    simType ='STR_inhibition_';
+
+    inhtmp = zeros(network_prop.numN,1);
+    STRtmp = network_prop.STR;
+    STRtmp(rem(STRtmp,2)==0)=[];
+    inhtmp(STRtmp) = network_prop.s2;
+    
+    Inh = zeros(network_prop.numN,network_prop.timePoints); % use for silencing
+    Inh(:,2100:2400) = repmat(inhtmp,1,301);
+    for i=1:300
+        Inh(:,2400+i) = [inhtmp+i*(-inhtmp)/300]'; % ramp down
+    end
+
+    network_prop.Inh          =Inh;
+    LT_STR =run_simulation(network_prop,param,simType,saveFig,normfactor_ctrl_cm,normfactor_ctrl_mm,normfactor_ctrl_rm);
+
+    save(fullfile(network_prop.saveFolder,'LickTime.mat'),'LT','LT_ALM','LT_STR')
+
+    LT_ALM-LT
+    LT_STR-LT
+end
+
+
+
+
+function [LTall,param,normfactor_cm,normfactor_mm,normfactor_rm] = run_simulation(network_prop,param,simType,saveFig,normfactor_ctrl_cm,normfactor_ctrl_mm,normfactor_ctrl_rm)
+%% run simulation and plot results
+
+    if ~isempty(param)
+        CM = param.CM;
+        MM = param.MM;
+        RM = param.RM;
+        RMthr = param.RMthr;
+        proj  = param.projOut;    
+    end
+    
+    f1 = figure;set(gcf,'Color','w','Position',[151 5 200 1100]);
+    f2 = figure;set(gcf,'Color','w','Position',[151 5 200 1100]);
+    f3 = figure;set(gcf,'Color','w','Position',[151 5 200 1100]);
+    f4 = figure;set(gcf,'Color','w','Position',[151 5 200 1100]);
+
+    numConditions = 5; % number of trial types (input/lick time) to simualte
+    color_line    = turbo(numConditions); jet(numConditions);
+    
+    cueOnset = 1.5*1000;%1.5*1000; % in ms
+    tAxis    = ([1:network_prop.timePoints]-cueOnset)/1000;
+    I        = zeros(numel(network_prop.r),numel(tAxis)); % input
+    maxSR    = network_prop.maxSR;
+    numN     = network_prop.numN; 
+    
+    if ~isempty(network_prop.STR)
+        regions = 2;
+    else
+        regions = 1;
+    end
+
+
+    normfactor_cm = nan(1,2);
+    normfactor_mm = nan(1,2);
+    normfactor_rm = nan(1,2);
+    
+    LTall = nan(numConditions,1);
+    
+    for i = 1:numConditions %numConditions:-1:1
+  
+        %% generate input for each trial type
+        % step except for externally driven model
+        inputTmp = (10-1.25*i)*1.5;
+        
+        tdiff    = numel(tAxis)- cueOnset+1;
+        if strcmp(network_prop.network_type,'externally_driven')
+            I(:,cueOnset:numel(tAxis))  = ((inputVector*inputTmp)*[1:tdiff]/tdiff);
+        else 
+            inputTmp = network_prop.inputVector*inputTmp/200;
+            inputTmp2 = network_prop.inputVector2/10;
+            I(:,cueOnset:numel(tAxis))  = repmat(inputTmp,1,tdiff);
+            I(:,cueOnset:cueOnset+149)  = I(:,cueOnset:cueOnset+149) + repmat(inputTmp2,1,150);
+            for j=150:600
+                I(:,cueOnset+j)  = I(:,cueOnset+j) + inputTmp2*(600-j)/450;
+            end
+       end
+        
+        %% run simulation
+        [r,In] = iteration(network_prop,I);
+
+  
+        %% define/project to mode
+        if i==1 && isempty(param)  % define mdoe in the first condition
+            
+           % lick time (where trigger neurons reach threshold) 
+           if network_prop.isALMtrigger == 1 % is threhsold 
+               last_neuron = network_prop.ALM(end-1);
+               
+               if strcmp(network_prop.network_type,'OneRegionFFmodel')
+                   last_neuron = network_prop.ALM(end-3);
+               end
+           else
+               last_neuron = network_prop.STR(end-1);
+           end
+           
+           tIDl = find(r(last_neuron,:)>=maxSR,1); % lick
+           if isempty(tIDl);tIDl = numel(tAxis);end
+               
+           LT = tIDl;    
+           tIDm = find(tAxis>=tAxis(tIDl-200)/2,1); % middle point
+           tID2 = find(tAxis<0,1,'last'); % before cue
+           tCue = find(tAxis>0.15,1); % cue
+           
+           %% define modes in each region
+           for region =1:regions
+           
+               if region == 1
+                   cellID = network_prop.ALM;
+                   %cellID(1) = []; % the first cell is input
+               else
+                   cellID = network_prop.STR;
+               end
+               
+               Cuemode    =  r(cellID,tCue) - r(cellID,tID2);CMtmp = Cuemode/norm(Cuemode);
+               Middlemode =  r(cellID,tIDm) - r(cellID,tID2);MMtmp = Middlemode/norm(Middlemode);
+               Rampmode   =  r(cellID,tIDl-200) - r(cellID,tID2);RMtmp = Rampmode/norm(Rampmode);
+               
+               % orthogonalize
+               MMtmp = MMtmp - (MMtmp'*RMtmp)*RMtmp;
+               MMtmp = MMtmp/norm(MMtmp);  
+
+               CMtmp = CMtmp - (CMtmp'*RMtmp)*RMtmp;
+               CMtmp = CMtmp - (CMtmp'*MMtmp)*MMtmp;
+               CMtmp = CMtmp/norm(CMtmp);
+               
+               RMthrtmp = RMtmp'*r(cellID,1:LT);
+               RMthr(region) = RMthrtmp(end);
+               
+               if ~isempty(CMtmp)
+                   CM{region} = CMtmp';
+                   MM{region} = MMtmp';
+                   RM{region} = RMtmp';
+               end
+           end
+
+        else
+            
+           if network_prop.isALMtrigger == 1 % is threhsold 
+               RMtmp = RM{1}*r(network_prop.ALM,:);
+               LT = find(RMtmp>=RMthr(1),1);
+           else
+               RMtmp = RM{2}*r(network_prop.STR,:);
+               LT = find(RMtmp>=RMthr(2),1);
+           end
+           
+           if isempty(LT)
+              LT =  numel(tAxis);
+           end
+            
+        end
+        
+        tAxis_LT = tAxis(1:LT);
+        
+        LTall(i) = tAxis(LT);
+ 
+        
+        %% fig1: plot input & activity of indv neurons
+
+                    
+        for region =1:regions % ALM, STR            
+
+            
+            if region==1
+                figure(f1);subplot(5,1,1);hold on;sgtitle('ALM')
+                nToShow = network_prop.ALMplot;
+            else
+                figure(f2);subplot(5,1,1);hold on;sgtitle('STR')
+                nToShow = network_prop.STRplot;
+            end
+
+            % input to neuron 1
+            subplot(6,1,1);hold on
+            plot(tAxis,max(I,[],1),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Input (a.u.)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5])
+
+            % perturbation
+            subplot(6,1,2);hold on
+            plot(tAxis,1-mean(network_prop.Inh(network_prop.ALM,:),1),'b','linewidth',2)
+            plot(tAxis,1-mean(network_prop.Inh(network_prop.STR,:),1),'m','linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Inhibition (a.u.)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            legend({'ALM','STR'},'location','NorthWest')
+            xlim([-0.5 2.5])
+
+            % neurons
+            subplot(6,1,3);hold on 
+            plot(tAxis,r(nToShow(1)+numN/2*(region-1),:),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Neuron 1 (Hz)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+
+            subplot(6,1,4);hold on 
+            plot(tAxis,r(nToShow(2)+numN/2*(region-1),:),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Neuron 2 (Hz)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+
+            subplot(6,1,5);hold on
+            plot(tAxis,r(nToShow(3)+numN/2*(region-1),:),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Neuron 3 (Hz)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+
+            subplot(6,1,6);hold on
+            plot(tAxis,r(nToShow(4)+numN/2*(region-1),:),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Neuron 4 (Hz)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+
+
+
+            %%  modes in ALM and STR
+
+            if region==1
+                figure(f3);subplot(5,1,1);hold on;sgtitle('ALM')
+                cellID = network_prop.ALM;
+            else
+                figure(f4);subplot(5,1,1);hold on;sgtitle('STR')
+                cellID = network_prop.STR;
+            end
+        
+            % input to neuron 1
+            plot(tAxis,max(I,[],1),'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Input (a.u.)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5])
+
+            % perturbation
+            subplot(5,1,2);hold on
+            plot(tAxis,1-mean(network_prop.Inh(network_prop.ALM,:),1),'b','linewidth',2)
+            plot(tAxis,1-mean(network_prop.Inh(network_prop.STR,:),1),'m','linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('Inhibition (a.u.)');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            legend({'ALM','STR'},'location','NorthWest')
+            xlim([-0.5 2.5])
+       
+            maxTimepoint = LTall(i);
+            % CM
+            subplot(5,1,3);hold on 
+            projCM = CM{region}*r(cellID,:);
+            maxCM = max(projCM(tAxis >0 & tAxis <= maxTimepoint));
+            minCM = mean(projCM(tAxis >-0.5 & tAxis <= 0)); % precue baseline
+            %noralize RM based on the first condition
+            if region == 1 % ALM
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.ALM,:),1)) == 0 % only use control condition
+                    normfactor_cm(region) = maxCM - minCM;
+                end                
+                if (mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.ALM,:),1))))...
+                        | (mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.STR,:),1))))% silencing
+                    normfactor_cm(region) = normfactor_ctrl_cm(region);
+                end
+                
+            else % str
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.STR,:),1)) == 0 % only use control condition
+                    normfactor_cm(region) = maxCM - minCM;
+                end
+                if mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 ||  mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0% silencing
+                    normfactor_cm(region) = normfactor_ctrl_cm(region);
+                end                
+            end
+            
+            if ~isnan(normfactor_cm(region))
+                projCM_norm = (projCM - minCM)/normfactor_cm(region);
+            end            
+            
+            plot(tAxis,projCM_norm,'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('CM');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+            ylims = ylim();
+            ylim([min(ylims) 1])
+
+            % MM
+            subplot(5,1,4);hold on 
+            projMM = MM{region}*r(cellID,:);
+            maxMM = max(projMM(tAxis >0 & tAxis <= maxTimepoint));
+            minMM = mean(projMM(tAxis >-0.5 & tAxis <= 0)); % precue baseline
+            %noralize RM based on the first condition
+            if region == 1 % ALM
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.ALM,:),1)) == 0 % only use control condition
+                    normfactor_mm(region) = maxMM - minMM;
+                end                
+                if (mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.ALM,:),1))))...
+                        | (mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.STR,:),1))))% silencing
+                    normfactor_mm(region) = normfactor_ctrl_mm(region);
+                end
+                
+            else % str
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.STR,:),1)) == 0 % only use control condition
+                    normfactor_mm(region) = maxMM - minMM;
+                end
+                if mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 ||  mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0% silencing
+                    normfactor_mm(region) = normfactor_ctrl_mm(region);
+                end                
+            end
+            
+            if ~isnan(normfactor_mm(region))
+                projMM_norm = (projMM - minMM)/normfactor_mm(region);
+            end          
+            
+            plot(tAxis,projMM_norm,'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('MM');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+            ylims = ylim();
+            ylim([min(ylims) 1])
+
+            % RM
+            subplot(5,1,5);hold on 
+            projRM = RM{region}*r(cellID,:);
+            maxRM = max(projRM(tAxis >0 & tAxis <= maxTimepoint));
+            minRM = mean(projRM(tAxis >-0.5 & tAxis <= 0)); % precue baseline
+            %noralize RM based on the first condition
+            if region == 1 % ALM
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.ALM,:),1)) == 0 % only use control condition
+                    normfactor_rm(region) = maxRM - minRM;
+                end                
+                if (mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.ALM,:),1))))...
+                        | (mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 & ~isnan(mean(mean(network_prop.Inh(network_prop.STR,:),1))))% silencing
+                    normfactor_rm(region) = normfactor_ctrl_rm(region);
+                end
+                
+            else % str
+                if i == 1 & mean(mean(network_prop.Inh(network_prop.STR,:),1)) == 0 % only use control condition
+                    normfactor_rm(region) = maxRM - minRM;
+                end
+                if mean(mean(network_prop.Inh(network_prop.STR,:),1)) ~= 0 ||  mean(mean(network_prop.Inh(network_prop.ALM,:),1)) ~= 0% silencing
+                    normfactor_rm(region) = normfactor_ctrl_rm(region);
+                end                
+            end
+            
+            if ~isnan(normfactor_rm(region))
+                projRM_norm = (projRM - minRM)/normfactor_rm(region);
+            end            
+            
+            plot(tAxis,projRM_norm,'color',color_line(i,:),'linewidth',2)
+            xline(0,'k:');xlabel('Time from cue');ylabel('RM');set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+            xlim([-0.5 2.5]);xline(0.6,'k:');xline(1.2,'k:');
+            ylims = ylim();
+            ylim([-0.1 1])
+          
+            
+            xline(LTall(i),':','color',color_line(i,:))
+            
+            % % overlay unperturbed conditions
+            if isempty(param)
+                proj{region,i}(1,:) = projCM_norm; %CM{region}*r(cellID,1:LT);
+                proj{region,i}(2,:) = projMM_norm; %MM{region}*r(cellID,1:LT);
+                proj{region,i}(3,:) = projRM_norm; %RM{region}*r(cellID,1:LT);
+            else
+                % overlay unperturbed conditions
+                subplot(5,1,3);hold on 
+                plot(tAxis(1:numel(proj{region,i}(1,:))),proj{region,i}(1,:),':','color',color_line(i,:),'linewidth',2)
+            
+                subplot(5,1,4);hold on 
+                plot(tAxis(1:numel(proj{region,i}(2,:))),proj{region,i}(2,:),':','color',color_line(i,:),'linewidth',2)
+                
+                subplot(5,1,5);hold on 
+                plot(tAxis(1:numel(proj{region,i}(3,:))),proj{region,i}(3,:),':','color',color_line(i,:),'linewidth',2)                
+            end
+        
+        end
+     
+        
+            %% correlation plot
+           
+
+            if i==1 && isempty(param) %i==numConditions && isempty(param)
+               r_1 = r(network_prop.ALMcorr,:); LT_1 = LT;xline(0.6,'w:');xline(1.2,'w:');
+            elseif i==1 && ~isempty(param) %i==numConditions && ~isempty(param)
+               r_1 = param.r_1; LT_1 = param.LT_1; 
+            end   
+       if saveFig ==1
+            corr_f{i} = figure;set(gcf,'Color','w','Position',[542 505 350 350]);hold on
+            imagesc(tAxis,tAxis,corr(r_1,r(network_prop.ALMcorr,:)));%colormap(gray); %colormap('jet')
+            xline(0,'w:');xline(tAxis_LT(LT),'w:')
+            yline(0,'w:');yline(tAxis_LT(LT_1),'w:')
+            %if i==numConditions && isempty(param)
+               xline(0.6,'w:');xline(1.2,'w:');
+            %end
+            %axis([0 3.5 0 3.5]);
+            xlim([0 2]);ylim([0 1.2]);caxis([0 1])
+            set(gca,'tickdir','out','fontsize',14,'ydir','normal','TickLength',[0.02, 0.01])
+
+        end
+        
+    end
+    
+    param.CM = CM;
+    param.MM = MM;
+    param.RM = RM;
+    param.RMthr = RMthr;
+    param.projOut = proj;
+    param.r_1  = r_1;
+    param.LT_1 = LT_1;
+    
+    
+    
+    %% save figs
+    
+   if saveFig ==1
+    
+        fileName = [simType,network_prop.network_type];
+        fileNameTmp = [fileName,'_ALMneurons'];
+        savefig(f1,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f1,'-dtiff' ,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f1,'-deps' ,fullfile(network_prop.saveFolder,fileNameTmp))  
+
+        fileNameTmp = [fileName,'_STRneurons'];
+        savefig(f2,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f2,'-dtiff' ,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f2,'-deps' ,fullfile(network_prop.saveFolder,fileNameTmp))  
+
+        fileNameTmp = [fileName,'_ALMmodes'];
+        savefig(f3,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f3,'-dtiff' ,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f3,'-deps' ,fullfile(network_prop.saveFolder,fileNameTmp))  
+
+        fileNameTmp = [fileName,'_STRmodes'];
+        savefig(f4,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f4,'-dtiff' ,fullfile(network_prop.saveFolder,fileNameTmp))
+        print(f4,'-deps' ,fullfile(network_prop.saveFolder,fileNameTmp))  
+
+        for i = 1:numel(corr_f)
+            fileName4 = [fileName,'_corr_',num2str(i)];
+            savefig(corr_f{i},fullfile(network_prop.saveFolder,fileName4))
+            print(corr_f{i},'-dtiff' ,fullfile(network_prop.saveFolder,fileName4))
+            print(corr_f{i},'-deps' ,fullfile(network_prop.saveFolder,fileName4))  
+        end
+    
+    end
+end
+
+
+
+
+function [r,i] = iteration(network_prop,I)
+
+    W       = network_prop.W;
+    F       = network_prop.F;
+    r       = network_prop.r;
+    Ithresh = network_prop.Ithresh;
+    Inh     = network_prop.Inh;
+    timePoints = network_prop.timePoints;
+    rThr    = network_prop.rThr;
+
+
+    tau =0.01;dt = 0.001;
+    rmax = 100; 
+    i = zeros(size(r));
+    h = zeros(size(r));
+
+    WnonFF = W.*(F==0);
+    WFF    = W.*(F==1);
+
+    % repeat
+    for n=2:timePoints
+
+        Itmp   = I(:,n) + Ithresh + Inh(:,n);
+        
+        rTmp   = r(:,n-1);
+        rTmp2  = rTmp-rThr;rTmp2(rTmp2<0) = 0;
+        Winput = WnonFF*rTmp + WFF*rTmp2;
+        
+        
+        h(:,n) = h(:,n-1)+ dt/tau*(-h(:,n-1)+Winput+Itmp);
+        i(:,n) = Itmp;
+
+        rNew  = max(0,h(:,n));  
+        r(:,n) = min(rmax,rNew);  
+    
+    end
+    
+    
+
+end
+
+
+
+
+
+
+
+function [network_prop] = gnerateConnectivityMatrix(network_type)
+% generate connectivity matrix for each type
+    
+
+    timePoints = 10000; % num of time points to simulate
+    
+    switch network_type
+     
+           
+          
+            
+       case 'STRintegrator'
+           % data like network
+              
+            % within a layer  
+            % neuron 1,2 ALM
+            % neuron 3,4 STR
+            % neuron 2 recieves ITI input and provide to STR
+            % neuron 1 receives ramp and send it back to STR (but orthogonal to eigenvector with eigen value 1)
+            % transinety input can be provided to neuron 1
+            
+            numL     = 4;    % number of feedfoward layers
+            numNperL = 4;    % number of neurons per layer
+            numN     = numL*numNperL; % total numebr of neurons
+            
+            % ALM
+            re1   = 0.3;  % recurrent excitation
+            mi1   = 0;    % mutual inhibition
+            ff1   = 0.0;  % feedforward connection
+            
+            % STR
+            re2   = 0.696;   % 0.695 0.698recurrent excitation
+            mi2   = -0.3;  % mutual inhibition
+            ff2   = 0.05; % 0.05 0.07 0.1 feedforward connection 
+            
+            % ALM-STR connections
+            cc = 0.39; %0.35
+            sa   = [cc 0.0 0.0 0.0]; % striatal to ALM 0.35
+            as   = [cc cc 0.0 0.0]; % ALM to striatum
+            % A(s)1 to S(a)1, A1 to S2, A2 to S1, A2 to S2
+
+            % generate connectivity matrix (output, input)
+            W = zeros(numN,numN);
+            F = zeros(numN,numN); % matrix indicating which one is FF connections across layers
+             
+            
+            for c = 1:numL
+                
+                % within layer, ALM
+                % neurons 1 ~ numL*2 are ALM
+                W((c-1)*2+1,(c-1)*2+1) = re1; % recurrent connection of ALM
+                W((c-1)*2+2,(c-1)*2+2) = re1; % recurrent connection of ALM
+                W((c-1)*2+1,(c-1)*2+2) = mi1; % mutual inhibition in ALM
+                W((c-1)*2+2,(c-1)*2+1) = mi1; % mutual inhibition in ALM
+
+                % within layer, STR
+                % neurons numL*2+1 ~ numL*4 are ALM
+                W((c-1)*2+1+numL*2,(c-1)*2+1+numL*2) = re2; % recurrent connection of STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2+numL*2) = re2; % recurrent connection of STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2+numL*2) = mi2; % mutual inhibition in STR
+                W((c-1)*2+2+numL*2,(c-1)*2+1+numL*2) = mi2; % mutual inhibition in STR
+               
+                % acorss layer FF connections of ALM/STR
+                if c<numL % no FF in the last layer
+                    W((c-1)*2+3,(c-1)*2+1) = ff1; % FF connection within ALM
+                    W((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = ff2; % FF connection within STR
+                    F((c-1)*2+3,(c-1)*2+1) = 1; % FF connection within ALM
+                    F((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = 1; % FF connection within STR
+                end
+
+                % within layer, ALM to STR
+                W((c-1)*2+1+numL*2,(c-1)*2+1)   = as(1); % ALM1 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+1)   = as(2); % ALM1 to STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2)   = as(3); % ALM2 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2)   = as(4); % ALM2 to STR2
+               
+                % within layer, STR to ALM
+                W((c-1)*2+1,(c-1)*2+1+numL*2)   = sa(1); % STR1 to ALM1
+                W((c-1)*2+2,(c-1)*2+1+numL*2)   = sa(2); % STR1 to ALM2
+                W((c-1)*2+1,(c-1)*2+2+numL*2)   = sa(3); % STR2 to ALM1
+                W((c-1)*2+2,(c-1)*2+2+numL*2)   = sa(4); % STR2 to ALM2
+            end
+            
+            W(numL*2+1,2) = 1;
+        
+            % input along slow mode (integration direction by recurrent connection): provided to neuron 2
+            inputVector    = zeros(numN,1);
+            inputVector(2) = 0.8;  % 0.3
+            
+            % input along fast mode (sequential diration by feedforward connection): provided to neuron 1
+            inputVector2   = zeros(numN,1);
+            inputVector2(1) = 3;
+            
+            ALM = [1:numL*2]; % which neurons are ALM
+            ALMcorr= [1:2:numL*2-1];  % which neurons to be used to calcualte corr plot,
+            % note even number cells are not used in this model
+            STR = [numL*2+1:numL*4];  % which neurons are STR
+            ALMplot = [1 3 5 7]; % ALM neurons to be plotted in fig
+            STRplot = [1 3 5 7]; % STR neurons to be plotted in fig
+            
+            isALMtrigger = 1; 
+            s1 = -3.3;  % silencing power for ALM silencing -3.6 works
+            s2 = -0.055; % silencing power for STR silencing
+            
+            % baseline spikr rate
+            r1     = 5;
+            r(:,1) = zeros(numN,1); % baseline spike rate, initial activity
+            r(STR,1) = r1;
+            r(ALM,1) = r1;
+            r(2,1)   = 0; 
+  
+            % calcualte baseline current to maintain the baseline spike
+            % rate
+            mask = [1:2,(1+numL*2):(2+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp1 = IthreshTmp(1:2);
+            IthreshTmp2 = IthreshTmp(3:4);
+            
+            mask = [3:4,(3+numL*2):(4+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp3 = IthreshTmp(1:2);
+            IthreshTmp4 = IthreshTmp(3:4);
+            
+            Ithresh    = [IthreshTmp1;repmat(IthreshTmp3,numL-1,1);...
+                IthreshTmp2;repmat(IthreshTmp4,numL-1,1)];
+            
+            % trehsold for FF connection
+            rThr = 5.5; %5.5;
+       
+            
+            
+       case 'ALMintegrator'
+           % reproducing EDF1 no layer
+              
+            % within a layer  
+            % neuron 1,2 ALM
+            % neuron 3,4 STR
+            % neuron 1 recieves ITI input and provide to STR
+            % neuron 2 receives ramp and send it back to STR (but orthogonal to eigenvector with eigen value 1)
+
+            numL     = 4;    % number of feedfoward layers
+            numNperL = 4; % number of neurons per layer
+            numN     = numL*numNperL; % total numebr of neurons
+            
+            % ALM
+            re1   = 0.69; % recurrent excitation > this determines max SR
+            mi1   = -0.3;  % mutual inhibition
+            ff1   = 0.04; %0.01;  % feedforward connection
+            
+            % STR
+            re2   = 0.3;  % recurrent excitation
+            mi2   = 0;  % mutual inhibition
+            ff2   = 0.0;  % feedforward connection
+
+            % ALM-STR connections
+            sa   = [0.35 0.35 0.0 0.0]; % striatal to ALM
+            as   = [0.35 0.0 0.0 0.0]; % ALM to striatum
+            % A(s)1 to S(a)1, A1 to S2, A2 to S1, A2 to S2
+
+            % generate connectivity matrix
+            W = zeros(numN,numN);
+            F = zeros(numN,numN);
+            % (output, input)
+            
+            for c = 1:numL
+                
+                % within layer, ALM
+                % neurons 1 ~ numL*2 are ALM
+                W((c-1)*2+1,(c-1)*2+1) = re1; % recurrent connection of ALM
+                W((c-1)*2+2,(c-1)*2+2) = re1; % recurrent connection of ALM
+                W((c-1)*2+1,(c-1)*2+2) = mi1; % mutual inhibition in ALM
+                W((c-1)*2+2,(c-1)*2+1) = mi1; % mutual inhibition in ALM
+
+                % within layer, STR
+                % neurons numL*2+1 ~ numL*4 are ALM
+                W((c-1)*2+1+numL*2,(c-1)*2+1+numL*2) = re2; % recurrent connection of STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2+numL*2) = re2; % recurrent connection of STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2+numL*2) = mi2; % mutual inhibition in STR
+                W((c-1)*2+2+numL*2,(c-1)*2+1+numL*2) = mi2; % mutual inhibition in STR
+               
+                % acorss layer FF connections of ALM/STR
+                if c<numL % no FF in the last layer
+                    W((c-1)*2+3,(c-1)*2+1) = ff1; % FF connection within ALM
+                    W((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = ff2; % FF connection within STR
+                    F((c-1)*2+3,(c-1)*2+1) = 1; % FF connection within ALM
+                    F((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = 1; % FF connection within STR
+                end
+
+                % within layer, ALM to STR
+                W((c-1)*2+1+numL*2,(c-1)*2+1)   = as(1); % ALM1 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+1)   = as(2); % ALM1 to STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2)   = as(3); % ALM2 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2)   = as(4); % ALM2 to STR2
+               
+                % within layer, STR to ALM
+                W((c-1)*2+1,(c-1)*2+1+numL*2)   = sa(1); % STR1 to ALM1
+                W((c-1)*2+2,(c-1)*2+1+numL*2)   = sa(2); % STR1 to ALM2
+                W((c-1)*2+1,(c-1)*2+2+numL*2)   = sa(3); % STR2 to ALM1
+                W((c-1)*2+2,(c-1)*2+2+numL*2)   = sa(4); % STR2 to ALM2
+            end
+            
+            W(1,numL*2+2) = 1;
+           
+                  
+            inputVector    = zeros(numN,1);
+            inputVector(numL*2+2) = 1.2;
+            inputVector2   = zeros(numN,1);
+            inputVector2(numL*2+1) = 1;
+            
+            ALM = [1:numL*2];ALMcorr= [1:2:numL*2-1];
+            STR = [numL*2+1:numL*4];
+            ALMplot = [1 3 5 7];
+            STRplot = [1 3 5 7];
+            
+            isALMtrigger = 1;
+            s1 = -3.2; %-5; 
+            s2 = -1; %-0.04;
+            
+            r1     = 5;
+            r(:,1) = zeros(numN,1); % baseline spike rate, initial activity
+            r(STR,1) = r1;
+            r(ALM,1) = r1;
+            r(numL*2+2,1)   = 0; 
+  
+            
+            mask = [1:2,(1+numL*2):(2+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp1 = IthreshTmp(1:2);
+            IthreshTmp2 = IthreshTmp(3:4);
+            
+            mask = [3:4,(3+numL*2):(4+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp3 = IthreshTmp(1:2);
+            IthreshTmp4 = IthreshTmp(3:4);
+            
+            Ithresh    = [IthreshTmp1;repmat(IthreshTmp3,numL-1,1);...
+                IthreshTmp2;repmat(IthreshTmp4,numL-1,1)];
+            
+            rThr = 5.5;
+            
+       case 'distributed'
+           % reproducing EDF1 no layer
+              
+             % within a layer  
+            % neuron 1,2 ALM
+            % neuron 3,4 STR
+            % neuron 1 recieves ITI input and provide to STR
+            % neuron 2 receives ramp and send it back to STR (but orthogonal to eigenvector with eigen value 1)
+
+            numL     = 4;    % number of feedfoward layers
+            numNperL = 4; % number of neurons per layer
+            numN     = numL*numNperL; % total numebr of neurons
+            
+            % ALM
+            re1   = 0.4;  % recurrent excitation
+            mi1   = -0.3;  % mutual inhibition
+            ff1   = 0.0;  % feedforward connection
+            
+            % STR
+            re2   = 0.395;  % recurrent excitation > make it slightly leaky> this determines max SR
+            mi2   = -0.3;  % mutual inhibition
+            ff2   = 0.2;  % feedforward connection
+            
+            % ALM-STR connections\
+            sa   = [0.3 0.0 0.6 0.9]; % striatal to ALM
+            as   = [0.9 0.6 0.0 0.3]; % ALM to striatum
+            % A(s)1 to S(a)1, A1 to S2, A2 to S1, A2 to S2
+
+            % generate connectivity matrix
+            W = zeros(numN,numN);
+            F = zeros(numN,numN);
+            % (output, input)
+            
+            for c = 1:numL
+                
+                % within layer, ALM
+                % neurons 1 ~ numL*2 are ALM
+                W((c-1)*2+1,(c-1)*2+1) = re1; % recurrent connection of ALM
+                W((c-1)*2+2,(c-1)*2+2) = re1; % recurrent connection of ALM
+                W((c-1)*2+1,(c-1)*2+2) = mi1; % mutual inhibition in ALM
+                W((c-1)*2+2,(c-1)*2+1) = mi1; % mutual inhibition in ALM
+
+                % within layer, STR
+                % neurons numL*2+1 ~ numL*4 are ALM
+                W((c-1)*2+1+numL*2,(c-1)*2+1+numL*2) = re2; % recurrent connection of STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2+numL*2) = re2; % recurrent connection of STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2+numL*2) = mi2; % mutual inhibition in STR
+                W((c-1)*2+2+numL*2,(c-1)*2+1+numL*2) = mi2; % mutual inhibition in STR
+               
+                % acorss layer FF connections of ALM/STR
+                if c<numL % no FF in the last layer
+                    W((c-1)*2+3,(c-1)*2+1) = ff1; % FF connection within ALM
+                    W((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = ff2; % FF connection within STR
+                    F((c-1)*2+3,(c-1)*2+1) = 1; % FF connection within ALM
+                    F((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = 1; % FF connection within STR
+                end
+
+                % within layer, ALM to STR
+                W((c-1)*2+1+numL*2,(c-1)*2+1)   = as(1); % ALM1 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+1)   = as(2); % ALM1 to STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2)   = as(3); % ALM2 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2)   = as(4); % ALM2 to STR2
+               
+                % within layer, STR to ALM
+                W((c-1)*2+1,(c-1)*2+1+numL*2)   = sa(1); % STR1 to ALM1
+                W((c-1)*2+2,(c-1)*2+1+numL*2)   = sa(2); % STR1 to ALM2
+                W((c-1)*2+1,(c-1)*2+2+numL*2)   = sa(3); % STR2 to ALM1
+                W((c-1)*2+2,(c-1)*2+2+numL*2)   = sa(4); % STR2 to ALM2
+            end
+
+                  
+            inputVector    = zeros(numN,1);
+            inputVector(1) = 4.5;
+            inputVector2   = zeros(numN,1);
+            inputVector2(1) = 1;
+            
+            ALM = [1:numL*2];ALMcorr= [1:2:numL*2-1];
+            STR = [numL*2+1:numL*4];
+            ALMplot = [1 3 5 7];
+            STRplot = [1 3 5 7];
+            
+            isALMtrigger = 1;
+            s1 = -3.2; 
+            s2 = -1; %-0.2 
+            
+            r1     = 5;
+            r(:,1) = zeros(numN,1); % baseline spike rate, initial activity
+            r(STR,1) = r1;
+            r(ALM,1) = r1;
+  
+            
+            mask = [1:2,(1+numL*2):(2+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp1 = IthreshTmp(1:2);
+            IthreshTmp2 = IthreshTmp(3:4);
+            
+            mask = [3:4,(3+numL*2):(4+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp3 = IthreshTmp(1:2);
+            IthreshTmp4 = IthreshTmp(3:4);
+            
+            Ithresh    = [IthreshTmp1;repmat(IthreshTmp3,numL-1,1);...
+                IthreshTmp2;repmat(IthreshTmp4,numL-1,1)];
+            
+            rThr = 5.5;
+            
+            
+        case 'redundant'
+           % reproducing EDF1 no layer
+              
+             % within a layer  
+            % neuron 1,2 ALM
+            % neuron 3,4 STR
+            % neuron 1 recieves ITI input and provide to STR
+            % neuron 2 receives ramp and send it back to STR (but orthogonal to eigenvector with eigen value 1)
+
+            numL     = 4;    % number of feedfoward layers
+            numNperL = 4; % number of neurons per layer
+            numN     = numL*numNperL; % total numebr of neurons
+            
+            % ALM
+            re1   = 0.69;  % recurrent excitation
+            mi1   = -0.3;  % mutual inhibition
+            ff1   = 0.02; %0.01;  % feedforward connection
+            
+            % STR
+            re2   = 0.69;  % recurrent excitation > this determines max SR
+            mi2   = -0.3;  % mutual inhibition
+            ff2   = 0.02; %0.01;  % feedforward connection
+            
+            % ALM-STR connections
+            sa   = [0.4 0.4 0.0 0.0]; % striatal to ALM
+            as   = [0.4 0.4 0.0 0.0]; % ALM to striatum
+            % A(s)1 to S(a)1, A1 to S2, A2 to S1, A2 to S2
+
+            % generate connectivity matrix
+            W = zeros(numN,numN);
+            F = zeros(numN,numN);
+            % (output, input)
+            
+            for c = 1:numL
+                
+                % within layer, ALM
+                % neurons 1 ~ numL*2 are ALM
+                W((c-1)*2+1,(c-1)*2+1) = re1; % recurrent connection of ALM
+                W((c-1)*2+2,(c-1)*2+2) = re1; % recurrent connection of ALM
+                W((c-1)*2+1,(c-1)*2+2) = mi1; % mutual inhibition in ALM
+                W((c-1)*2+2,(c-1)*2+1) = mi1; % mutual inhibition in ALM
+
+                % within layer, STR
+                % neurons numL*2+1 ~ numL*4 are ALM
+                W((c-1)*2+1+numL*2,(c-1)*2+1+numL*2) = re2; % recurrent connection of STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2+numL*2) = re2; % recurrent connection of STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2+numL*2) = mi2; % mutual inhibition in STR
+                W((c-1)*2+2+numL*2,(c-1)*2+1+numL*2) = mi2; % mutual inhibition in STR
+               
+                % acorss layer FF connections of ALM/STR
+                if c<numL % no FF in the last layer
+                    W((c-1)*2+3,(c-1)*2+1) = ff1; % FF connection within ALM
+                    W((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = ff2; % FF connection within STR
+                    F((c-1)*2+3,(c-1)*2+1) = 1; % FF connection within ALM
+                    F((c-1)*2+3+numL*2,(c-1)*2+1+numL*2) = 1; % FF connection within STR
+                end
+
+                % within layer, ALM to STR
+                W((c-1)*2+1+numL*2,(c-1)*2+1)   = as(1); % ALM1 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+1)   = as(2); % ALM1 to STR2
+                W((c-1)*2+1+numL*2,(c-1)*2+2)   = as(3); % ALM2 to STR1
+                W((c-1)*2+2+numL*2,(c-1)*2+2)   = as(4); % ALM2 to STR2
+               
+                % within layer, STR to ALM
+                W((c-1)*2+1,(c-1)*2+1+numL*2)   = sa(1); % STR1 to ALM1
+                W((c-1)*2+2,(c-1)*2+1+numL*2)   = sa(2); % STR1 to ALM2
+                W((c-1)*2+1,(c-1)*2+2+numL*2)   = sa(3); % STR2 to ALM1
+                W((c-1)*2+2,(c-1)*2+2+numL*2)   = sa(4); % STR2 to ALM2
+            end
+      
+            inputVector    = zeros(numN,1);
+            inputVector(1) = 1.5;
+            inputVector2   = zeros(numN,1);
+            inputVector2(1) = 1;
+            
+            ALM = [1:numL*2];ALMcorr= [1:2:numL*2-1];
+            STR = [numL*2+1:numL*4];
+            ALMplot = [1 3 5 7];
+            STRplot = [1 3 5 7];
+            
+            isALMtrigger = 1;
+            s1 = -3.2; 
+            s2 = -0.08; 
+            
+            r1     = 5;
+            r(:,1) = zeros(numN,1); % baseline spike rate, initial activity
+            r(STR,1) = r1;
+            r(ALM,1) = r1;
+  
+            
+            mask = [1:2,(1+numL*2):(2+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp1 = IthreshTmp(1:2);
+            IthreshTmp2 = IthreshTmp(3:4);
+            
+            mask = [3:4,(3+numL*2):(4+numL*2)];
+            IthreshTmp = -(-r(mask)+W(mask,mask)*r(mask));  
+            IthreshTmp3 = IthreshTmp(1:2);
+            IthreshTmp4 = IthreshTmp(3:4);
+            
+            Ithresh    = [IthreshTmp1;repmat(IthreshTmp3,numL-1,1);...
+                IthreshTmp2;repmat(IthreshTmp4,numL-1,1)];
+            
+            rThr = 5.5;
+            
+    end
+
+
+    saveFolder = fullfile('FF_MultiRegionalModel',network_type);
+    mkdir(saveFolder);
+
+
+    network_prop.W            =W;
+    network_prop.F            =F;
+    network_prop.r            =r;
+    network_prop.Inh          =zeros(numN,timePoints); % use for silencing
+    network_prop.timePoints   =timePoints;
+    network_prop.numN         =numN;
+    network_prop.inputVector  =inputVector;
+    network_prop.inputVector2 =inputVector2; % non scale input
+    network_prop.Ithresh      =Ithresh;
+    network_prop.network_type = network_type;
+    network_prop.ALM          = ALM;
+    network_prop.STR          = STR;
+    network_prop.isALMtrigger = isALMtrigger;
+    network_prop.ALMplot      = ALMplot;
+    network_prop.STRplot      = STRplot;
+    network_prop.ALMcorr      = ALMcorr;
+    network_prop.rThr         = rThr; %5.1; %thr for FF connection
+    network_prop.maxSR        = 10;%5.5
+    network_prop.s1           = s1;
+    network_prop.s2           = s2;
+    network_prop.network_type = network_type;
+    network_prop.saveFolder   = saveFolder;
+    
+  
+    
+    %% connectivity matrix
+    
+    [A,B,C] = eig(W)
+    
+    f = figure;set(gcf,'Color','w','Position',[542 505 350 350]);
+    imagesc(W)
+    set(gca,'tickdir','out','fontsize',14,'TickLength',[0.02, 0.01])
+    fileName = ['Matrix_',network_type];
+    savefig(f,fullfile(saveFolder,fileName))
+    print(f,'-dtiff' ,fullfile(saveFolder,fileName))
+    print(f,'-deps' ,fullfile(saveFolder,fileName)) 
+end
+

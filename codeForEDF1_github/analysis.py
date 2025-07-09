@@ -1,9 +1,11 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from scipy.optimize import fsolve
 from functools import partial
 from config import ensure_directory_exists
+import scipy.io as sio
 
 
 def system_dynamics(x, W, inputVector):
@@ -85,12 +87,22 @@ def compute_correlation_matrix(trajectories):
 
 def plot_correlation_matrix(correlation_matrix, title, network_type):
     plt.figure(figsize=(8, 8))
-    plt.imshow(correlation_matrix, cmap='coolwarm', interpolation='nearest', vmin=0.5, vmax=1)
+
+    # Use MATLAB's parula-equivalent colormap (from `cm` or via `matplotlib-parula`)
+    parula = cm.get_cmap('viridis')  # Closest native matplotlib colormap to MATLAB's parula
+
+    plt.imshow(correlation_matrix, cmap='coolwarm', interpolation='nearest', vmin=0.3, vmax=1)
     plt.colorbar()
     plt.title(f'Correlation Matrix - {title}')
     plt.xlabel('Time Points')
     plt.ylabel('Time Points')
+    plt.gca().invert_yaxis() 
     network_folder = ensure_directory_exists(network_type)
     filename = f"{title.replace(' ', '_')}_correlation_matrix.png"
+    filename1 = f"{title.replace(' ', '_')}_correlation_matrix.eps"
     plt.savefig(os.path.join(network_folder, filename))
+    plt.savefig(os.path.join(network_folder, filename1))
     print(f'Saved correlation matrix as {filename}')
+    plt.close()
+
+    print('')

@@ -9,11 +9,11 @@ def configure_network(network_type):
         W = np.array([
             [0.4, 0.0, 0.0, 0.0],
             [0.00, 0.3, cc, 0.0],
-            [0.3, cc, 0.7, -0.3],
+            [0.03, cc, 0.7, -0.3],
             [0.0, cc, -0.3, 0.7]
-        ])           
+        ])          
 
-        inputVector = np.array([3, 0, 0, 0])
+        inputVector = np.array([50, 0, 0, 0])  # inputVector = np.array([6, 0, 0, 0])
 
         cueVector = np.array([0.0, 0.0, 0.0, 0.0])
 
@@ -22,7 +22,7 @@ def configure_network(network_type):
 
     elif network_type == 'two_region_integrator_1input':
         cc = 0.4
-        dd = 0
+        dd = 0.6
         
         W = np.array([
             [cc,       -0.3,          0.7 - cc,           dd ],
@@ -31,14 +31,14 @@ def configure_network(network_type):
             [dd, 0.7 - cc,            -0.3,          cc      ]
         ])
         
-        inputVector = np.array([4, 0, 0, 0])
+        inputVector = np.array([3, 0, 0, 0])
         cueVector = np.array([0.0, 0.0, 0.0, 0.0])
 
         s1, s2 = -1, -0.2
         
     
     elif network_type == 'two_integrator_1input':    
-        cc = 0.2
+        cc = 0.4  # 0.2
 
         W = np.array([
             [0.7, -0.3, cc, 0.0],
@@ -48,7 +48,7 @@ def configure_network(network_type):
         ])
         
        
-        inputVector = np.array([2, 0, 0, 0])
+        inputVector = np.array([3, 0, 0, 0])
         cueVector = np.array([0.0, 0.0, 0.0, 0.0])
 
         s1, s2 = -1, -0.2
@@ -70,7 +70,7 @@ def configure_network(network_type):
         
 
     elif network_type == 'one_integrator_follower_opposite_1input':
-        cc = 0.3
+        cc = 0.5 #0.3
         
         W = np.array([
             [0.7, -0.3, cc, 0.0],
@@ -85,15 +85,16 @@ def configure_network(network_type):
 
     elif network_type == 'one_integrator_follower_opposite_leaky_1input':  
         cc = 0.3
-
+        
         W = np.array([
             [0.69, -0.3, cc, 0.4],
             [-0.3, 0.69, 0.0, 0.4],
             [0.0, 0.0, 0.4, 0.0],
             [0.4, 0.0, 0.0, 0.3]
         ])
+        
 
-        inputVector = np.array([0, 0, 2, 0]) # input to STR only
+        inputVector = np.array([0, 0, 10, 0]) # input to STR only
         cueVector = np.array([0.0, 0.0, 0.0, 0.0])
 
         s1, s2 = -0.2, -1     
@@ -107,7 +108,7 @@ def configure_network(network_type):
             [cc, 0.0, 0.4, -0.3],
             [cc, 0.0, -0.3, 0.4]
         ])
-        inputVector = np.array([0.2, 0, 0, 0])
+        inputVector = np.array([0.5, 0, 0, 0])
         cueVector = np.array([0.0, 0.0, 0.0, 0.0])
 
         s1, s2 = -2, -2        

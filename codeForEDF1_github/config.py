@@ -19,7 +19,7 @@ network_type = 'data' # this and the conditions below correspond to EDF. 1a-f
 
 
 # Parameters
-timePoints = 2820 
+timePoints = 3500 
 h_init = np.array([5, 5, 5, 5])  # Baseline current
 
 if network_type == 'data':
